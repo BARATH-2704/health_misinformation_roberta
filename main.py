@@ -8,19 +8,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 from urllib.parse import urlparse
 
-# ==========================
-# GLOBAL VARIABLES
-# ==========================
-
 model = None
 tokenizer = None
 
 # ==========================
-# CREDIBILITY FUNCTION
+# CREDIBILITY SCORE
 # ==========================
 
 def get_credibility_score(url):
-
     domain = urlparse(url).netloc.lower()
 
     if "who.int" in domain:
@@ -43,7 +38,7 @@ class RobertaWithCredibility(nn.Module):
         super().__init__()
 
         self.roberta = RobertaModel.from_pretrained("roberta-base")
-        self.classifier = nn.Linear(768 + 1, 2)
+        self.classifier = nn.Linear(769, 2)
 
     def forward(self, input_ids, attention_mask, credibility):
 
@@ -59,12 +54,12 @@ class RobertaWithCredibility(nn.Module):
 
 
 # ==========================
-# DATASET CLASS
+# DATASET
 # ==========================
 
 class HealthDataset(Dataset):
 
-    def __init__(self, texts, labels, credibility_scores, tokenizer):
+    def __init__(self, texts, labels, credibility, tokenizer):
 
         self.encodings = tokenizer(
             texts,
@@ -74,14 +69,13 @@ class HealthDataset(Dataset):
         )
 
         self.labels = labels
-        self.credibility = credibility_scores
+        self.credibility = credibility
 
     def __getitem__(self, idx):
 
-        item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
+        item = {k: torch.tensor(v[idx]) for k, v in self.encodings.items()}
 
         item["labels"] = torch.tensor(self.labels[idx])
-
         item["credibility"] = torch.tensor(self.credibility[idx], dtype=torch.float)
 
         return item
@@ -92,7 +86,7 @@ class HealthDataset(Dataset):
 
 
 # ==========================
-# TRAIN MODEL
+# TRAIN FUNCTION
 # ==========================
 
 def train_model():
@@ -101,24 +95,22 @@ def train_model():
 
     print("\nLoading dataset...")
 
-    fake_df = pd.read_csv("data/NewsFakeCOVID-19.csv")[['content', 'news_url']].dropna()
-    real_df = pd.read_csv("data/NewsRealCOVID-19.csv")[['content', 'news_url']].dropna()
+    fake_df = pd.read_csv("data/NewsFakeCOVID-19.csv")[["content", "news_url"]].dropna()
+    real_df = pd.read_csv("data/NewsRealCOVID-19.csv")[["content", "news_url"]].dropna()
 
-    fake_df['label'] = 1
-    real_df['label'] = 0
+    fake_df["label"] = 1
+    real_df["label"] = 0
 
-    real_df_balanced = real_df.sample(n=len(fake_df), random_state=42)
+    real_df = real_df.sample(n=len(fake_df), random_state=42)
 
-    df = pd.concat([fake_df, real_df_balanced], ignore_index=True)
-
-    df = df.sample(frac=1, random_state=42).reset_index(drop=True)
+    df = pd.concat([fake_df, real_df]).sample(frac=1).reset_index(drop=True)
 
     df["credibility"] = df["news_url"].apply(get_credibility_score)
 
     train_texts, test_texts, train_labels, test_labels, train_cred, test_cred = train_test_split(
-        df['content'].tolist(),
-        df['label'].tolist(),
-        df['credibility'].tolist(),
+        df["content"].tolist(),
+        df["label"].tolist(),
+        df["credibility"].tolist(),
         test_size=0.2,
         random_state=42
     )
@@ -157,11 +149,11 @@ def train_model():
 
             loss = loss_fn(logits, batch["labels"])
 
-            total_loss += loss.item()
-
             loss.backward()
 
             optimizer.step()
+
+            total_loss += loss.item()
 
         print(f"Epoch {epoch+1} Loss: {total_loss}")
 
@@ -169,8 +161,8 @@ def train_model():
 
     model.eval()
 
-    predictions = []
-    true_labels = []
+    preds = []
+    labels = []
 
     with torch.no_grad():
 
@@ -182,24 +174,24 @@ def train_model():
                 credibility=batch["credibility"]
             )
 
-            preds = torch.argmax(logits, dim=1)
+            p = torch.argmax(logits, dim=1)
 
-            predictions.extend(preds.tolist())
-            true_labels.extend(batch["labels"].tolist())
+            preds.extend(p.tolist())
+            labels.extend(batch["labels"].tolist())
 
-    accuracy = accuracy_score(true_labels, predictions)
+    accuracy = accuracy_score(labels, preds)
 
     print("\nTest Accuracy:", accuracy)
 
     print("\nClassification Report:\n")
 
-    print(classification_report(true_labels, predictions))
+    print(classification_report(labels, preds))
 
-    print("\nModel training completed!\n")
+    print("\n✅ Training completed. You can now detect news.\n")
 
 
 # ==========================
-# PREDICT NEWS
+# DETECT NEWS
 # ==========================
 
 def detect_news():
@@ -207,34 +199,29 @@ def detect_news():
     global model, tokenizer
 
     if model is None:
-        print("\n⚠️ Train the model first (Option 1)\n")
+
+        print("\n⚠ Train the model first (Option 1)\n")
         return
 
     while True:
 
-        print("\nEnter article text (or type EXIT to stop):\n")
-
-        text = input()
+        text = input("\nEnter article text (type EXIT to stop):\n")
 
         if text.lower() == "exit":
             break
 
-        print("\nEnter source URL:")
+        url = input("Enter source URL:\n")
 
-        url = input()
-
-        credibility = get_credibility_score(url)
+        cred = get_credibility_score(url)
 
         inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
-
-        model.eval()
 
         with torch.no_grad():
 
             logits = model(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
-                credibility=torch.tensor([credibility])
+                credibility=torch.tensor([cred])
             )
 
         prediction = torch.argmax(logits, dim=1).item()
@@ -246,17 +233,14 @@ def detect_news():
 
 
 # ==========================
-# MAIN PROGRAM LOOP
+# MAIN MENU LOOP
 # ==========================
 
 while True:
 
     print("\n===== HEALTH MISINFORMATION DETECTOR =====")
-
     print("1. Train Model")
-
     print("2. Detect Fake News")
-
     print("3. Exit")
 
     choice = input("\nEnter choice: ")
@@ -271,8 +255,7 @@ while True:
 
     elif choice == "3":
 
-        print("\nExiting program...")
-
+        print("\nExiting program...\n")
         break
 
     else:
